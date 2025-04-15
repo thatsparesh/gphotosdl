@@ -333,18 +333,6 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 		}
 	}()
 
-	// Check the correct network request is received
-	var netResponse *proto.NetworkResponseReceived
-	page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
-		url := e.Response.URL
-		slog.Debug("network response", "rxURL", url, "status", e.Response.Status)
-		if strings.HasPrefix(url, gphotoURLReal) || strings.HasPrefix(url, gphotoURL) {
-			netResponse = e
-			return true
-		}
-		return false
-	})
-
 	// Navigate to the photo URL
 	slog.Debug("Navigate to photo URL")
 	err = page.Navigate(url)
@@ -356,19 +344,8 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	slog.Debug("Wait for page to reach NetworkAlmostIdle state")
 	page.WaitNavigation(proto.PageLifecycleEventNameNetworkAlmostIdle)()
 
-	// Check if the response was received and has a valid status
-	if netResponse == nil {
-		return "", fmt.Errorf("gphoto fetch failed: no network response received")
-	}
-	if netResponse.Response.Status != 200 {
-		return "", fmt.Errorf("gphoto fetch failed: %w", httpError(netResponse.Response.Status))
-	}
-
 	// Download waiter
 	downloadWaiter := g.browser.WaitDownload(downloadDir)
-
-	// Urg doesn't always catch the keypress so wait
-	// time.Sleep(time.Second)
 
 	// Shift-D to download
 	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
