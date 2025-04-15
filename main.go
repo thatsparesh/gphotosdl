@@ -333,15 +333,12 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 		}
 	}()
 
-	var netResponse *proto.NetworkResponseReceived
-
 	// Check the correct network request is received
-	waitNetwork := page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
-		slog.Debug("network response", "rxURL", e.Response.URL, "status", e.Response.Status)
-		if strings.HasPrefix(e.Response.URL, gphotoURLReal) {
-			netResponse = e
-			return true
-		} else if strings.HasPrefix(e.Response.URL, gphotoURL) {
+	var netResponse *proto.NetworkResponseReceived
+	page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
+		url := e.Response.URL
+		slog.Debug("network response", "rxURL", url, "status", e.Response.Status)
+		if strings.HasPrefix(url, gphotoURLReal) || strings.HasPrefix(url, gphotoURL) {
 			netResponse = e
 			return true
 		}
@@ -359,27 +356,30 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	slog.Debug("Wait for page to reach NetworkAlmostIdle state")
 	page.WaitNavigation(proto.PageLifecycleEventNameNetworkAlmostIdle)()
 
-	// Wait for the photos network request to happen
-	slog.Debug("Wait for network response")
-	waitNetwork()
-
-	// Print request headers
+	// Check if the response was received and has a valid status
+	if netResponse == nil {
+		return "", fmt.Errorf("gphoto fetch failed: no network response received")
+	}
 	if netResponse.Response.Status != 200 {
 		return "", fmt.Errorf("gphoto fetch failed: %w", httpError(netResponse.Response.Status))
 	}
 
 	// Download waiter
-	wait := g.browser.WaitDownload(downloadDir)
+	downloadWaiter := g.browser.WaitDownload(downloadDir)
 
 	// Urg doesn't always catch the keypress so wait
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 
 	// Shift-D to download
 	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
 
 	// Wait for download
 	slog.Debug("Wait for download")
-	info := wait()
+	downloadTimeout := 10 * time.Second
+	info, err := waitForDownloadWithTimeout(page, downloadWaiter, downloadTimeout)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
 	path := filepath.Join(downloadDir, info.GUID)
 
 	// Check file
@@ -391,6 +391,40 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	slog.Debug("Download successful", "size", fi.Size(), "path", path)
 
 	return path, nil
+}
+
+// waits for a download to complete or times out if no progress is detected
+func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.PageDownloadWillBegin, downloadTimeout time.Duration) (*proto.PageDownloadWillBegin, error) {
+	downloadComplete := make(chan *proto.PageDownloadWillBegin, 1) // Channel for download completion
+	timer := time.NewTimer(downloadTimeout)                        // Create a timer for the timeout
+
+	defer timer.Stop() // Stop the timer when done
+
+	// Listen for PageDownloadProgress events
+	page.EachEvent(func(e *proto.PageDownloadProgress) bool {
+		if e.State == proto.PageDownloadProgressStateInProgress {
+			slog.Debug("Download in progress", "guid", e.GUID)
+
+			// Reset the timer to extend the timeout
+			timer.Reset(downloadTimeout)
+		}
+		return false // Keep listening for events
+	})
+
+	// Run the blocking wait function in a goroutine
+	go func() {
+		downloadComplete <- downloadWaiter()
+	}()
+
+	// Monitor completion and timeout
+	select {
+	case info := <-downloadComplete:
+		// Download completed successfully
+		return info, nil
+	case <-timer.C:
+		// Timeout reached without progress
+		return nil, fmt.Errorf("download stalled for more than %s", downloadTimeout)
+	}
 }
 
 // Close the browser
