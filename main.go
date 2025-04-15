@@ -354,11 +354,10 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to navigate to photo %q: %w", photoID, err)
 	}
-	slog.Debug("Wait for page to load")
-	err = g.page.WaitLoad()
-	if err != nil {
-		return "", fmt.Errorf("gphoto page load: %w", err)
-	}
+
+	// Wait for the page to reach the "NetworkAlmostIdle" state
+	slog.Debug("Wait for page to reach NetworkAlmostIdle state")
+	page.WaitNavigation(proto.PageLifecycleEventNameNetworkAlmostIdle)()
 
 	// Wait for the photos network request to happen
 	slog.Debug("Wait for network response")
