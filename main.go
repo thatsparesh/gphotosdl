@@ -372,14 +372,25 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	// Download waiter
 	wait := g.browser.WaitDownload(downloadDir)
 
-	// Urg doesn't always catch the keypress so wait
-	time.Sleep(time.Second)
+	// Listen for download progress events
+	var downloadStarted bool
+	page.EachEvent(func(e *proto.PageDownloadProgress) bool {
+		if e.State == proto.PageDownloadProgressStateInProgress {
+			slog.Debug("Download started", "guid", e.GUID)
+			downloadStarted = true
+			return true // Stop listening after detecting the event
+		}
+		return false
+	})
 
-	// Shift-D to download
-	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
+	// Wait for download to start or timeout
+	err = waitForDownloadStart(page, time.Minute, &downloadStarted)
+	if err != nil {
+		slog.Error("Download failed to start within the timeout period", "error", err)
+		return "", err
+	}
 
-	// Wait for download
-	slog.Debug("Wait for download")
+	// Wait for download to complete
 	info := wait()
 	path := filepath.Join(downloadDir, info.GUID)
 
@@ -390,8 +401,47 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	}
 
 	slog.Debug("Download successful", "size", fi.Size(), "path", path)
-
 	return path, nil
+}
+
+// Function to wait for downloadStart or timeout
+func waitForDownloadStart(page *rod.Page, timeout time.Duration, downloadStarted *bool) error {
+	startTime := time.Now()
+	lastInitiation := time.Time{} // Track the last time download was initiated
+
+	for {
+		// Check if download has started
+		if *downloadStarted {
+			slog.Debug("Download has started")
+			return nil // Download started successfully
+		}
+
+		// Check if timeout has been reached
+		if time.Since(startTime) > timeout {
+			return errors.New("download did not start within the timeout period")
+		}
+
+		// Initiate download every 10 seconds
+		if time.Since(lastInitiation) >= 10*time.Second {
+			initDownload(page)
+			lastInitiation = time.Now()
+		}
+
+		// Wait for 1 second before checking again
+		time.Sleep(1 * time.Second)
+
+		// Check if download has started again
+		if *downloadStarted {
+			slog.Debug("Download has started after waiting")
+			return nil
+		}
+	}
+}
+
+// Initiate download by pressing Shift-D
+func initDownload(page *rod.Page) {
+	slog.Debug("Initiating download by pressing Shift-D")
+	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
 }
 
 // Close the browser
