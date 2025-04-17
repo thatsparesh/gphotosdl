@@ -314,6 +314,10 @@ func (h httpError) Error() string {
 //
 // Returns the path to the photo which should be deleted after use
 func (g *Gphotos) Download(photoID string) (string, error) {
+	// Can only download one picture at once
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	url := gphotoURL + photoID
 
 	slog := slog.With("id", photoID)
@@ -333,10 +337,6 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 
 	// Navigate to the photo URL
 	slog.Debug("Navigate to photo URL")
-
-	// Can only download one picture at once
-	g.mu.Lock()
-	defer g.mu.Unlock()
 
 	activePage, err := page.Activate()
 	if err != nil {
