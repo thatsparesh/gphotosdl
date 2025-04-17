@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -345,15 +346,12 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	page.WaitNavigation(proto.PageLifecycleEventNameNetworkAlmostIdle)()
 
 	// Download waiter
-	downloadWaiter := g.browser.WaitDownload(downloadDir)
+	browserWithCancel, cancel := g.browser.WithCancel()
 
-	// Shift-D to download
-	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
-
-	// Wait for download
-	slog.Debug("Wait for download")
+	downloadWaiter := browserWithCancel.WaitDownload(downloadDir)
 	downloadTimeout := 10 * time.Second
-	info, err := waitForDownloadWithTimeout(page, downloadWaiter, downloadTimeout)
+	info, err := waitForDownloadWithTimeout(page, downloadWaiter, downloadTimeout,
+		cancel)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
@@ -371,27 +369,35 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 }
 
 // waits for a download to complete or times out if no progress is detected
-func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.PageDownloadWillBegin, downloadTimeout time.Duration) (*proto.PageDownloadWillBegin, error) {
+func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.PageDownloadWillBegin, downloadTimeout time.Duration, cancel context.CancelFunc) (*proto.PageDownloadWillBegin, error) {
 	downloadComplete := make(chan *proto.PageDownloadWillBegin, 1) // Channel for download completion
 	timer := time.NewTimer(downloadTimeout)                        // Create a timer for the timeout
 
 	defer timer.Stop() // Stop the timer when done
 
 	// Listen for PageDownloadProgress events
-	page.EachEvent(func(e *proto.PageDownloadProgress) bool {
+	go page.EachEvent(func(e *proto.PageDownloadProgress) bool {
 		if e.State == proto.PageDownloadProgressStateInProgress {
 			slog.Debug("Download in progress", "guid", e.GUID)
 
 			// Reset the timer to extend the timeout
 			timer.Reset(downloadTimeout)
+		} else if e.State == proto.PageDownloadProgressStateCompleted {
+			return true // Stop listening for events
 		}
 		return false // Keep listening for events
-	})
+	})()
 
 	// Run the blocking wait function in a goroutine
 	go func() {
 		downloadComplete <- downloadWaiter()
 	}()
+
+	// Shift-D to download
+	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
+
+	// Wait for download
+	slog.Debug("Wait for download")
 
 	// Monitor completion and timeout
 	select {
@@ -400,6 +406,7 @@ func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.Pag
 		return info, nil
 	case <-timer.C:
 		// Timeout reached without progress
+		cancel()
 		return nil, fmt.Errorf("download stalled for more than %s", downloadTimeout)
 	}
 }
