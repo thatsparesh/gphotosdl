@@ -320,7 +320,7 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 
 	// Create a new blank browser tab
 	slog.Error("Open new tab")
-	page, err := g.browser.Page(proto.TargetCreateTarget{})
+	page, err := g.browser.Page(proto.TargetCreateTarget{Background: true, URL: url})
 	if err != nil {
 		return "", fmt.Errorf("failed to open browser tab for photo %q: %w", photoID, err)
 	}
@@ -333,10 +333,6 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 
 	// Navigate to the photo URL
 	slog.Debug("Navigate to photo URL")
-	err = page.Navigate(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to navigate to photo %q: %w", photoID, err)
-	}
 
 	// Can only download one picture at once
 	g.mu.Lock()
