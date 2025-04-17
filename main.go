@@ -338,16 +338,21 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Wait for the page to reach the "NetworkAlmostIdle" state
-	slog.Debug("Wait for page to reach NetworkAlmostIdle state")
-	page.WaitNavigation(proto.PageLifecycleEventNameNetworkAlmostIdle)()
+	activePage, err := page.Activate()
+	if err != nil {
+		return "", fmt.Errorf("failed to activate page: %w", err)
+	}
+
+	// Wait for the page to reach the "DOMContentLoaded" state
+	slog.Debug("Wait for page to reach DOMContentLoaded state")
+	activePage.WaitNavigation(proto.PageLifecycleEventNameDOMContentLoaded)()
 
 	// Download waiter
 	browserWithCancel, cancel := g.browser.WithCancel()
 
 	downloadWaiter := browserWithCancel.WaitDownload(downloadDir)
 	downloadTimeout := 10 * time.Second
-	info, err := waitForDownloadWithTimeout(page, downloadWaiter, downloadTimeout,
+	info, err := waitForDownloadWithTimeout(activePage, downloadWaiter, downloadTimeout,
 		cancel)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
@@ -391,7 +396,6 @@ func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.Pag
 	}()
 
 	// Shift-D to download
-	page.Activate()
 	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
 
 	// Wait for download
