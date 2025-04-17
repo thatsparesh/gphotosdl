@@ -152,12 +152,9 @@ func (logger) Println(vs ...any) {
 
 // Gphotos is a single page browser for Google Photos
 type Gphotos struct {
-	browser            *rod.Browser
-	page               *rod.Page
-	mu                 sync.Mutex // only one download at once is allowed
-	completed          chan bool  // channel to signal download completion
-	downloadInProgress chan bool  // download in progress
-	downloadGUID       string     // GUID of the download
+	browser *rod.Browser
+	page    *rod.Page
+	mu      sync.Mutex // only one download at once is allowed
 }
 
 // New creates a new browser on the gphotos main page to check we are logged in
@@ -234,36 +231,6 @@ func (g *Gphotos) startBrowser() error {
 	if !authenticated {
 		return errors.New("browser is not log logged in - rerun with the -login flag")
 	}
-	// Subscribe to BrowserDownloadWillBegin and BrowserDownloadProgress events
-	g.downloadGUID = ""
-	g.completed = make(chan bool, 1)
-	g.downloadInProgress = make(chan bool, 1)
-
-	slog.Debug("Subscribing to download events")
-	go g.browser.EachEvent(func(e *proto.PageDownloadWillBegin) {
-		g.downloadGUID = e.GUID
-		slog.Debug("Download started", "guid", e.GUID)
-	}, func(e *proto.PageDownloadProgress) {
-		if e.GUID == g.downloadGUID {
-			if e.State == proto.PageDownloadProgressStateCompleted {
-				slog.Debug("Download completed", "guid", e.GUID)
-				select {
-				case g.downloadInProgress <- false: // Signal that download is no longer in progress
-				default:
-				}
-				select {
-				case g.completed <- true:
-				default:
-				}
-			} else if e.State == proto.PageDownloadProgressStateInProgress {
-				slog.Debug("Download in progress", "guid", e.GUID)
-				select {
-				case g.downloadInProgress <- true: // Signal that download is in progress
-				default:
-				}
-			}
-		}
-	})()
 	return nil
 }
 
@@ -377,32 +344,20 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	slog.Debug("Wait for page to reach NetworkAlmostIdle state")
 	page.WaitNavigation(proto.PageLifecycleEventNameNetworkAlmostIdle)()
 
-	// Drain the `completed` channel
-	select {
-	case <-g.completed:
-		slog.Debug("Drained completed channel")
-	default:
-		// No value to drain
-	}
-
-	// Drain the `downloadInProgress` channel
-	select {
-	case <-g.downloadInProgress:
-		slog.Debug("Drained downloadInProgress channel")
-	default:
-		// No value to drain
-	}
+	// Download waiter
+	downloadWaiter := g.browser.WaitDownload(downloadDir)
 
 	// Shift-D to download
 	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
 
 	// Wait for download
 	slog.Debug("Wait for download")
-	downloadGUID, err := g.waitForDownloadWithTimeout()
+	downloadTimeout := 10 * time.Second
+	info, err := waitForDownloadWithTimeout(page, downloadWaiter, downloadTimeout)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
-	path := filepath.Join(downloadDir, downloadGUID)
+	path := filepath.Join(downloadDir, info.GUID)
 
 	// Check file
 	fi, err := os.Stat(path)
@@ -416,30 +371,35 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 }
 
 // waits for a download to complete or times out if no progress is detected
-func (g *Gphotos) waitForDownloadWithTimeout() (string, error) {
+func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.PageDownloadWillBegin, downloadTimeout time.Duration) (*proto.PageDownloadWillBegin, error) {
+	downloadComplete := make(chan *proto.PageDownloadWillBegin, 1) // Channel for download completion
+	timer := time.NewTimer(downloadTimeout)                        // Create a timer for the timeout
 
-	downloadTimeout := 10 * time.Second
-	timer := time.NewTimer(downloadTimeout)
-	defer timer.Stop()
+	defer timer.Stop() // Stop the timer when done
 
-	for {
-		select {
-		case <-g.completed:
-			// Download completed successfully
-			return g.downloadGUID, nil
-		case inProgress := <-g.downloadInProgress:
-			// Download in progress, wait for completion
-			if inProgress {
-				timer.Reset(downloadTimeout)
-				slog.Debug("Timer reset due to download progress")
-			}
+	// Listen for PageDownloadProgress events
+	page.EachEvent(func(e *proto.PageDownloadProgress) bool {
+		if e.State == proto.PageDownloadProgressStateInProgress {
+			slog.Debug("Download in progress", "guid", e.GUID)
 
-		case <-timer.C:
-			// Timeout reached
-			err := fmt.Errorf("download stalled for more than %s (GUID: %s)", downloadTimeout, g.downloadGUID)
-			g.downloadGUID = ""
-			return "", err
+			// Reset the timer to extend the timeout
+			timer.Reset(downloadTimeout)
+		} else if e.State == proto.PageDownloadProgressStateCompleted {
+			slog.Debug("Download completed", "guid", e.GUID)
+			downloadComplete <- downloadWaiter()
+			return true // Stop listening for events
 		}
+		return false // Keep listening for events
+	})
+
+	// Monitor completion and timeout
+	select {
+	case info := <-downloadComplete:
+		// Download completed successfully
+		return info, nil
+	case <-timer.C:
+		// Timeout reached without progress
+		return nil, fmt.Errorf("download stalled for more than %s", downloadTimeout)
 	}
 }
 
