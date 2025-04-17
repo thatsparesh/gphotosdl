@@ -395,6 +395,7 @@ func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.Pag
 	}()
 
 	// Shift-D to download
+	page.Activate()
 	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
 
 	// Wait for download
