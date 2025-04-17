@@ -384,14 +384,13 @@ func waitForDownloadWithTimeout(page *rod.Page, downloadWaiter func() *proto.Pag
 
 			// Reset the timer to extend the timeout
 			timer.Reset(downloadTimeout)
+		} else if e.State == proto.PageDownloadProgressStateCompleted {
+			slog.Debug("Download completed", "guid", e.GUID)
+			downloadComplete <- downloadWaiter()
+			return true // Stop listening for events
 		}
 		return false // Keep listening for events
 	})
-
-	// Run the blocking wait function in a goroutine
-	go func() {
-		downloadComplete <- downloadWaiter()
-	}()
 
 	// Monitor completion and timeout
 	select {
