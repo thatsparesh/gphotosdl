@@ -323,8 +323,8 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	slog := slog.With("id", photoID)
 
 	// Create a new blank browser tab
-	slog.Error("Open new tab")
-	page, err := g.browser.Page(proto.TargetCreateTarget{Background: true, URL: url})
+	slog.Debug("Open new tab and navigate to photo URL", "url", url)
+	page, err := g.browser.Page(proto.TargetCreateTarget{URL: url})
 	if err != nil {
 		return "", fmt.Errorf("failed to open browser tab for photo %q: %w", photoID, err)
 	}
@@ -335,24 +335,16 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 		}
 	}()
 
-	// Navigate to the photo URL
-	slog.Debug("Navigate to photo URL")
-
-	activePage, err := page.Activate()
-	if err != nil {
-		return "", fmt.Errorf("failed to activate page: %w", err)
-	}
-
 	// Wait for the page to reach the "DOMContentLoaded" state
 	slog.Debug("Wait for page to reach DOMContentLoaded state")
-	activePage.WaitNavigation(proto.PageLifecycleEventNameDOMContentLoaded)()
+	page.WaitNavigation(proto.PageLifecycleEventNameDOMContentLoaded)()
 
 	// Download waiter
 	browserWithCancel, cancel := g.browser.WithCancel()
 
 	downloadWaiter := browserWithCancel.WaitDownload(downloadDir)
-	downloadTimeout := 10 * time.Second
-	info, err := waitForDownloadWithTimeout(activePage, downloadWaiter, downloadTimeout,
+	downloadTimeout := 2 * time.Minute
+	info, err := waitForDownloadWithTimeout(page, downloadWaiter, downloadTimeout,
 		cancel)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
